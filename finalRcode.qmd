@@ -1,0 +1,613 @@
+---
+title: "Hot Spring Richness – Normality Check"
+author: "Ecologist"
+date: "2026-06-25"
+format: html
+editor: source
+---
+
+```{r}
+#| label: setup
+#| message: false
+#| warning: false
+```
+
+```{r}
+#| label: packages
+#| message: false
+
+# Load all required packages.
+# Some packages (e.g., piecewiseSEM, DiagrammeR) are needed later for SEM.
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(performance)
+library(MASS)
+library(e1071)
+library(car)
+library(cowplot)
+library(tidyverse)
+library(Hmisc)
+library(linkET)
+library(hier.part)
+library(glmm.hp)
+library(broom)
+library(mgcv)
+library(piecewiseSEM)
+library(DiagrammeR)
+library(glue)
+library(scales)
+```
+
+```{r}
+#| label: load-data
+
+# Import the SEM dataset
+hotspring <- read.csv("D:/2025hotspringcover/Data/SEMdata.csv", header = TRUE, stringsAsFactors = FALSE)
+
+#| label: clean-data
+
+# Convert to data.frame and set row names from the CODE column
+hotspring <- as.data.frame(hotspring)
+rownames(hotspring) <- hotspring$CODE
+hotspring <- hotspring[, -1]   # remove the CODE column
+
+# Separate zero‑richness sites (they will be analysed differently)
+hotspring <- hotspring %>%
+  filter(richnesstotal != 0)
+hotspring_zero <- hotspring %>%
+  filter(richnesstotal == 0)
+
+# Round species pool estimates to whole numbers
+hotspring$species_pool <- round(hotspring$species_pool)
+
+#| label: rescale
+
+# Rescale all numeric predictors to the range [0, 1]
+# This puts variables on a common scale and helps convergence of models.
+mydata <- hotspring |> 
+  mutate(across(where(is.numeric), ~ scales::rescale(.x, to = c(0, 1))))
+
+#| label: normality-tests
+
+# Shapiro–Wilk test for normality of total richness
+shapiro_richness <- shapiro.test(mydata$richnesstotal)
+shapiro_richness
+
+# Shapiro–Wilk test for normality of VGC (a predictor)
+shapiro_vgc <- shapiro.test(mydata$VGC)
+shapiro_vgc
+
+```
+
+```{r}
+#| label: gam-model
+# Fit a Poisson GAM to test for a non‑linear effect of soil pH on total richness
+modelrich_gam <- gam(richnesstotal ~ s(pH_soil, k = 3, bs = "cs"), 
+                     data = hotspring, family = poisson)
+summary(modelrich_gam)
+
+#| label: glm-model
+# Fit a simple Poisson GLM: richness explained by species pool size
+modelpool <- glm(richnesstotal ~ species_pool, data = hotspring, family = poisson)
+summary(modelpool)
+```
+
+```{r}
+# p1: Richness ~ pH (GAM smoother)
+p1 <- ggplot(hotspring, aes(x = pH_soil, y = richnesstotal)) +
+  geom_point(color = "#0072B2", size = 3) +
+  geom_smooth(
+    method = "gam",
+    formula = y ~ s(x),
+    method.args = list(family = "poisson"),
+    se = TRUE,
+    color = "#E69F00"
+  ) +
+  labs(x = "Soil pH", y = "Total richness") +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.line = element_line(size = 1.2, color = "black"),
+    panel.grid = element_blank(),
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(size = 12)
+  )
+p1
+
+# p2: Richness ~ Species pool (GLM)
+p2 <- ggplot(hotspring, aes(x = species_pool, y = richnesstotal)) +
+  geom_point(color = "#0072B2", size = 3) +
+  geom_smooth(
+    method = "glm",
+    method.args = list(family = "poisson"),
+    se = TRUE,
+    color = "#E69F00"
+  ) +
+  labs(x = "Species pool", y = "Total richness") +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.line = element_line(size = 1.2, color = "black"),
+    panel.grid = element_blank(),
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(size = 12)
+  )
+p2
+
+# p3: Species pool vs. pH interval (simple scatter)
+p3 <- ggplot(hotspring, aes(x = pH_interval, y = species_pool)) +
+  geom_point(color = "#0072B2", size = 3) +
+  labs(x = "pH interval", y = "Species pool size") +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.line = element_line(size = 1.2, color = "black"),
+    panel.grid = element_blank(),
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(size = 12),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+p3
+
+final_plot <- (p1 | p2 | p3) + 
+  plot_annotation(tag_levels = "A")
+final_plot
+
+```
+
+```{r}
+## 5. Microhabitat Drivers of Richness
+#| label: fig-microhabitat
+#| fig-cap: "Non-linear relationships between local species richness and microhabitat variables. (A) Soil moisture (dashed line indicates a distinct or weaker trend), (B) Soil temperature, (C) Litter cover, and (D) Biological soil crust cover."
+#| fig-width: 10
+#| fig-height: 8
+#| echo: true
+
+# Define a reusable plotting function using modern tidy evaluation (.data[[]])
+plot_gam <- function(data, xvar, xlabel, lty = "solid") {
+  ggplot(data, aes(x = .data[[xvar]], y = richnesstotal)) +
+    geom_point(color = "#0072B2", size = 1.5, alpha = 0.6) +
+    geom_smooth(
+      method = "gam",
+      formula = y ~ s(x),
+      method.args = list(family = "poisson"),
+      se = TRUE,
+      color = "#E69F00",
+      linewidth = 1.2,
+      linetype = lty # Elegant way to handle line types
+    ) +
+    labs(x = xlabel, y = "Species Richness") +
+    theme_minimal(base_size = 14) +
+    theme(
+      axis.line = element_line(linewidth = 1.2, color = "black"),
+      panel.grid = element_blank(),
+      axis.title = element_text(face = "bold"),
+      axis.text = element_text(size = 12)
+    )
+}
+
+# Generate plots for four microhabitat variables
+p_soil_m    <- plot_gam(hotspring, "Soil_m", "Soil Moisture", lty = "dashed")
+p_temp_soil <- plot_gam(hotspring, "Temp_soil", "Soil Temperature")
+p_litter    <- plot_gam(hotspring, "LITTER", "Litter Cover")
+p_crust     <- plot_gam(hotspring, "CRUST", "Biological Soil Crust")
+
+# Combine into a 2x2 layout using patchwork
+p_all <- (p_soil_m | p_temp_soil) /
+         (p_litter  | p_crust) + 
+  plot_annotation(tag_levels = "A") & 
+  theme(plot.tag = element_text(face = "bold", size = 16))
+
+p_all
+```
+
+```{r}
+#| label: gam-multiple
+# Helper: fit a GAM with a single smooth term
+fit_gam <- function(data, xvar) {
+  formula_gam <- as.formula(paste("richnesstotal ~ s(", xvar, ")", sep = ""))
+  gam(formula_gam, data = data, family = poisson)
+}
+
+# Fit GAMs for four predictors
+gam_soil_m    <- fit_gam(hotspring, "Soil_m")
+gam_temp      <- fit_gam(hotspring, "Temp_soil")
+gam_litter    <- fit_gam(hotspring, "LITTER")
+gam_crust     <- fit_gam(hotspring, "CRUST")
+
+# Extract key statistics
+extract_gam_stats <- function(gam_model) {
+  s <- summary(gam_model)
+  data.frame(
+    edf      = s$s.table[1, "edf"],
+    chi_sq   = s$s.table[1, "Chi.sq"],
+    p_value  = s$s.table[1, "p-value"],
+    dev_expl = s$dev.expl
+  )
+}
+
+# Combine results into a single table
+gam_results <- rbind(
+  Soil_m    = extract_gam_stats(gam_soil_m),
+  Temp_soil = extract_gam_stats(gam_temp),
+  LITTER    = extract_gam_stats(gam_litter),
+  CRUST     = extract_gam_stats(gam_crust)
+)
+
+gam_results
+```
+
+```{r}
+#| label: full-glm
+# Fit a Gaussian GLM on rescaled data (variables now in [0,1])
+model <- glm(
+  richnesstotal ~ pH_soil + Soil_m + Temp_soil +  
+    LITTER + CRUST +
+    HS.TEMP + HS.PH +
+    pH_cv + Temp_cv,
+  data = mydata, family = gaussian
+)
+summary(model)
+```
+
+```{r}
+#| label: vif
+# Variance Inflation Factor – checks for multicollinearity
+vif(model)
+```
+
+```{r}
+#| label: dispersion
+# Check overdispersion (should be close to 1 for a well‑specified Gaussian model)
+dispersion <- sum(residuals(model, type = "pearson")^2) / df.residual(model)
+cat("Dispersion parameter:", dispersion, "\n")
+
+#| label: hier-part
+# Hierarchical partitioning – assesses independent contributions of each predictor
+iv_list <- all.vars(formula(model))[-1]  # all predictors
+hp_result <- hier.part(
+  y = mydata$richnesstotal, 
+  xcan = mydata[, iv_list], 
+  family = "gaussian", gof = "Rsqu"
+)
+
+```
+
+```{r}
+#| label: forest-plot
+#| fig-width: 7
+#| fig-height: 5
+#| fig-cap: "Forest plot: GLM coefficient estimates with 95% confidence intervals"
+
+# Extract coefficients (excluding intercept)
+P <- summary(model)
+fixed_effects <- as.data.frame(P$coefficients) %>%
+  mutate(
+    Variable = rownames(.),
+    Lower = Estimate - 1.96 * `Std. Error`,
+    Upper = Estimate + 1.96 * `Std. Error`,
+    Significance = case_when(
+      `Pr(>|t|)` < 0.001 ~ "***",
+      `Pr(>|t|)` < 0.01 ~ "**",
+      `Pr(>|t|)` < 0.05 ~ "*",
+      `Pr(>|t|)` < 0.1 ~ ".",
+      TRUE ~ " "
+    )
+  ) %>%
+  filter(Variable != "(Intercept)") %>%
+  arrange(desc(abs(Estimate))) %>%
+  mutate(Variable = factor(Variable, levels = rev(Variable)))
+
+# Draw forest plot
+forest_plot <- ggplot(fixed_effects, aes(x = Estimate, y = Variable)) +
+  geom_point(size = 3, color = "#0072B2") +
+  geom_errorbarh(aes(xmin = Lower, xmax = Upper), height = 0.2, color = "#0072B2") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  scale_x_continuous(limits = c(-1, 1), breaks = seq(-1, 1, 0.5)) +
+  scale_y_discrete(
+    position = "right",
+    labels = c(
+      "Litter cover ***",
+      "pH CV **",
+      "Soil pH **",
+      "Biological crust *",
+      "Hotspring pH",
+      "Temperature CV",
+      "Soil temperature",
+      "Hotspring temperature",
+      "Soil moisture"
+    )
+  ) +
+  labs(title = "GLM coefficient estimates", x = "Estimate (±95% CI)", y = "") +
+  theme_bw() +
+  theme(axis.text.y.right = element_text(size = 12, color = "black"),
+        axis.text.x = element_text(size = 12),
+        plot.title = element_text(hjust = 0.5, size = 14))
+
+forest_plot
+```
+
+```{r}
+#| label: bar-plot
+#| fig-width: 7
+#| fig-height: 5
+#| fig-cap: "Hierarchical partitioning: independent contribution (%) of each predictor"
+
+# Use glmm.hp to get individual contributions (works on the same model)
+result <- glmm.hp(model)
+
+# Prepare data frame with percentages and ANOVA significance
+data_plot <- data.frame(
+  variable   = rownames(result$hierarchical.partitioning),
+  percentage = result$hierarchical.partitioning[, "I.perc(%)"]
+)
+
+anova_res <- anova(model)
+significance <- data.frame(
+  variable = rownames(anova_res),
+  p_value  = anova_res$`Pr(>F)`
+) %>%
+  mutate(Significance = ifelse(p_value < 0.05, "Significant", "Not Significant"))
+
+data_plot <- left_join(data_plot, significance, by = "variable") %>%
+  arrange(desc(percentage)) %>%
+  mutate(variable = factor(variable, levels = rev(variable)))
+
+# Draw bar plot
+bar_plot <- ggplot(data_plot, aes(x = variable, y = percentage, fill = Significance)) +
+  geom_bar(stat = "identity", width = 0.7, color = "white") +
+  geom_text(aes(label = round(percentage, 2)), vjust = -0.3, size = 3.5, fontface = "bold") +
+  scale_fill_manual(values = c("Significant" = "#4DBBD5FF", "Not Significant" = "#BEBEBEFF")) +
+  scale_x_discrete(
+    labels = c(
+      "Soil pH", "Litter cover", "Hotspring pH", "pH CV",
+      "Biological crust", "Temperature CV", "Hotspring temperature",
+      "Soil temperature", "Soil moisture"
+    )
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05)), limits = c(0, 30)) +
+  labs(y = "Contribution (%)", x = "", fill = "Significance") +
+  ggtitle("Hierarchical Partitioning") +
+  theme_classic(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+    axis.title.y = element_text(face = "bold"),
+    axis.line.x = element_line(size = 1.2),
+    axis.line.y = element_line(size = 1.2),
+    legend.position = "top",
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold")
+  )
+
+bar_plot
+```
+
+```{r}
+#| label: combined-final
+#| fig-width: 14
+#| fig-height: 6
+#| fig-cap: "Combined model diagnostics: forest plot (left) and hierarchical partitioning (right)"
+
+combined_plot <- forest_plot | bar_plot +
+  plot_annotation(title = "Model Analysis: richnesstotal",
+                  theme = theme(plot.title = element_text(hjust = 0.5, size = 16, face = "bold")))
+combined_plot
+```
+
+```{r}
+#| label: sem
+# Define the piecewise SEM
+sem_model_updated <- psem(
+  glm(LITTER ~ pH_soil + Soil_m + Temp_soil, data = mydata, family = gaussian(link = "identity")),
+  glm(CRUST ~ pH_soil + Soil_m + Temp_soil, data = mydata, family = gaussian(link = "identity")),
+  glm(richnesstotal ~ LITTER + pH_soil + CRUST + Soil_m + pH_cv + Temp_soil, 
+      data = mydata, family = gaussian(link = "identity"))
+)
+
+summary(sem_model_updated)
+rsquared(sem_model_updated)
+fisherC(sem_model_updated)
+```
+
+```{r}
+#| label: sem-plot-ggplot
+#| fig-width: 8
+#| fig-height: 6
+#| fig-cap: "SEM path diagram – standardized coefficients shown on arrows"
+
+# ---------- Extract coefficients (with column name fix) ----------
+coef_raw <- coefs(sem_model_updated, standardize = "scale")
+coef_table <- as.data.frame(coef_raw)
+if (any(bad <- names(coef_table) %in% c("", NA))) {
+  names(coef_table)[bad] <- paste0("col", which(bad))
+}
+
+get_stars <- function(p) {
+  case_when(
+    p < 0.001 ~ "***",
+    p < 0.01  ~ "**",
+    p < 0.05  ~ "*",
+    TRUE      ~ ""
+  )
+}
+
+edges <- coef_table %>%
+  transmute(
+    from     = Predictor,
+    to       = Response,
+    est      = as.numeric(Std.Estimate),
+    p        = as.numeric(P.Value),
+    label    = sprintf("%.2f%s", est, get_stars(p)),
+    sig      = p < 0.05,
+    color    = ifelse(sig, "#E69F00", "gray80"),
+    linetype = ifelse(sig, "solid", "dashed"),
+    size     = ifelse(sig, ifelse(p < 0.001, 1.2, 0.9), 0.5)
+  )
+
+# ---------- Node layout ----------
+rank_blocks <- "
+  { rank = same; pH_soil; Soil_m; Temp_soil }
+  { rank = same; pH_cv }
+  { rank = same; LITTER }
+  { rank = same; CRUST }
+  { rank = same; richnesstotal }
+"
+
+levels_raw <- str_extract_all(rank_blocks, "(?<=rank = same; ).*?(?=\\s*\\})")[[1]]
+levels <- str_split(levels_raw, ";\\s*") %>% lapply(str_trim)
+
+all_nodes <- unique(c(edges$from, edges$to))
+missing_nodes <- setdiff(all_nodes, unlist(levels))
+if (length(missing_nodes) > 0) levels <- c(levels, list(missing_nodes))
+
+n_levels <- length(levels)
+node_pos <- map_dfr(seq_along(levels), function(i) {
+  nodes <- levels[[i]]
+  y <- n_levels - i + 1
+  n <- length(nodes)
+  x <- seq(-(n-1)/2, (n-1)/2, length.out = n) * 2.5
+  tibble(name = nodes, x = x, y = y)
+})
+
+# ---------- Edge coordinates (fixed grouping) ----------
+edges_pos <- edges %>%
+  left_join(node_pos, by = c("from" = "name")) %>%
+  rename(from_x = x, from_y = y) %>%
+  left_join(node_pos, by = c("to" = "name")) %>%
+  rename(to_x = x, to_y = y) %>%
+  mutate(pair = paste(pmin(from, to), pmax(from, to), sep = "|")) %>%  # build column first
+  group_by(pair) %>%
+  mutate(
+    curve_base = ifelse(from < to, 0.15, -0.15),
+    curvature  = curve_base + (row_number() - 1) * 0.12 * sign(curve_base)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    label_x = (from_x + to_x) / 2,
+    label_y = (from_y + to_y) / 2,
+    nudge_y = 0.15 * ifelse(from_y > to_y, 1, -1)
+  )
+
+# ---------- Plot ----------
+ggplot() +
+  pmap(
+    list(edges_pos$from_x, edges_pos$from_y,
+         edges_pos$to_x, edges_pos$to_y,
+         edges_pos$color, edges_pos$linetype,
+         edges_pos$size, edges_pos$curvature),
+    function(x, y, xend, yend, col, lty, sz, curv) {
+      geom_curve(
+        aes(x = x, y = y, xend = xend, yend = yend,
+            color = col, linetype = lty, size = sz),
+        curvature = curv,
+        arrow = arrow(length = unit(0.18, "inches"), type = "closed"),
+        show.legend = FALSE,
+        lineend = "round"
+      )
+    }
+  ) +
+  geom_label(
+    data = edges_pos,
+    aes(x = label_x, y = label_y + nudge_y, label = label),
+    size = 3.8, fill = "white", color = "black", label.size = 0,
+    alpha = 0.9
+  ) +
+  geom_label(
+    data = node_pos,
+    aes(x = x, y = y, label = name),
+    fill = "lightyellow", color = "black", size = 5,
+    label.size = 0.6, fontface = "bold"
+  ) +
+  scale_color_identity() +
+  scale_linetype_identity() +
+  scale_size_identity() +
+  coord_fixed(ratio = 1.2) +
+  xlim(-5, 5) +
+  ylim(0.5, n_levels + 0.8) +
+  theme_void() +
+  theme(plot.margin = margin(20, 20, 20, 20))
+```
+
+```{r}
+#| label: effects
+# Extract standardized coefficients
+std <- coefs(sem_model_updated, standardize = "scale")
+path_direct <- std %>%
+  dplyr::select(Response, Predictor, Std.Estimate)
+
+# Helper to extract a direct path coefficient (returns 0 if path not present)
+get_std <- function(pred, resp, data = path_direct) {
+  val <- data %>%
+    filter(Predictor == pred, Response == resp) %>%
+    pull(Std.Estimate)
+  if (length(val) == 0) return(0)
+  return(val)
+}
+
+# Helper for indirect effect through a mediator
+get_indirect <- function(pred, mediator, outcome, data = path_direct) {
+  get_std(pred, mediator, data) * get_std(mediator, outcome, data)
+}
+
+# ---- Effects for Soil_m ----
+indirect_soil_litter <- get_indirect("Soil_m", "LITTER", "richnesstotal")
+indirect_soil_crust  <- get_indirect("Soil_m", "CRUST",  "richnesstotal")
+total_indirect_soil <- indirect_soil_litter + indirect_soil_crust
+direct_soil <- get_std("Soil_m", "richnesstotal")
+total_soil  <- direct_soil + total_indirect_soil
+
+cat("Soil_m:\n")
+cat("  Direct   =", direct_soil, "\n")
+cat("  Indirect =", total_indirect_soil, "\n")
+cat("  Total    =", total_soil, "\n\n")
+#| label: effects-table
+effects_table <- tibble(
+  Variable = c("Soil_m", "pH_soil", "Temp_soil"),
+  Direct = c(
+    get_std("Soil_m",   "richnesstotal"),
+    get_std("pH_soil",  "richnesstotal"),
+    get_std("Temp_soil","richnesstotal")
+  ),
+  Indirect = c(
+    get_indirect("Soil_m",   "LITTER", "richnesstotal") +
+      get_indirect("Soil_m", "CRUST",  "richnesstotal"),
+    get_indirect("pH_soil",  "LITTER", "richnesstotal") +
+      get_indirect("pH_soil","CRUST",  "richnesstotal"),
+    get_indirect("Temp_soil","LITTER", "richnesstotal") +
+      get_indirect("Temp_soil","CRUST","richnesstotal")
+  )
+) %>%
+  mutate(Total = Direct + Indirect)
+
+effects_table
+
+#| label: effects-plot
+#| fig-width: 8
+#| fig-height: 5
+#| fig-cap: "Direct, indirect, and total standardized effects of the three focal predictors"
+effects_long <- effects_table %>%
+  pivot_longer(
+    cols = c(Direct, Indirect, Total),
+    names_to = "EffectType",
+    values_to = "EffectSize"
+  ) %>%
+  mutate(Variable = factor(Variable,
+                           levels = c("pH_soil", "Soil_m", "Temp_soil"),
+                           labels = c("Soil pH", "Soil moisture", "Soil temperature")))
+
+ggplot(effects_long, aes(x = Variable, y = EffectSize, fill = EffectType)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.6) +
+  theme_minimal(base_size = 14) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "Standardized Effects of Soil pH, Moisture, and Temperature",
+    y = "Standardized Effect Size",
+    x = NULL
+  ) +
+  coord_cartesian(ylim = c(-0.2, 0.5)) +
+  theme(
+    axis.text = element_text(color = "black"),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.title = element_blank()
+  )
+```
